@@ -1,4 +1,4 @@
-# 这是 out-of-tree 内核模块的 Kbuild Makefile。
+# 这是外置内核模块使用的 Kbuild Makefile。
 #
 # 用法示例：
 #   make KERNEL_DIR=/lib/modules/$(uname -r)/build

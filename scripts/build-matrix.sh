@@ -11,7 +11,7 @@ MAKE_CMD=${MAKE:-make}
 status=0
 
 if [ "$#" -eq 0 ]; then
-	# 不传参数时，默认验证这些本机源码树。传参数时，每个参数都是一个 kernel build tree。
+	# 不传参数时，默认验证这些本机源码树。传参数时，每个参数都是一个内核构建目录。
 	set -- \
 		/data/kernel/linux-4.19.1 \
 		/data/kernel/linux-5.4.150 \
@@ -32,7 +32,7 @@ for kernel_dir in "$@"; do
 	fi
 
 	# 没有 Module.symvers 时，modpost 无法确认内核导出符号，会把很多符号报成
-	# unresolved。做源码兼容性验证时可降级成 warning，让编译继续走完。
+	# 未解析符号。做源码兼容性验证时可降级成警告，让编译继续走完。
 	modpost_warn=${KBUILD_MODPOST_WARN:-}
 	if [ -z "$modpost_warn" ] && [ ! -e "$kernel_dir/Module.symvers" ]; then
 		modpost_warn=1
