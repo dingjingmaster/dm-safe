@@ -3902,6 +3902,30 @@ static struct target_type crypt_target = {
 	/*
 	 * Device Mapper target 注册表。dm_register_target() 后，用户态映射表里写
 	 * "crypt" 就会绑定到这一组回调。
+	 *
+	 * 每个回调的触发时机：
+	 *   .ctr：创建映射时执行。用户态执行 dmsetup create/load，或 cryptsetup
+	 *         打开 LUKS 设备并把 table 交给 dm core 后，dm core 调用它解析参数、
+	 *         分配 crypt_config、打开底层设备、创建 mempool/workqueue/thread。
+	 *   .dtr：销毁映射时执行。用户态执行 dmsetup remove，或映射创建中途失败需要
+	 *         回滚时，dm core 调用它释放 .ctr 申请的资源。
+	 *   .map：每个 bio 进入 dm-crypt 时执行。文件系统或块层发读写/flush/discard
+	 *         请求到这个 dm 设备，dm core 调用它决定直接 remap、排队读、还是排队写。
+	 *   .status：查询映射状态或表项时执行。dmsetup status/table 等命令会触发它，
+	 *         用来输出当前 target 的参数和可选特性。
+	 *   .postsuspend：映射 suspend 完成后执行。dmsetup suspend 或换表流程暂停 IO 后，
+	 *         dm core 调用它标记当前映射已暂停，允许 message 接口改 key。
+	 *   .preresume：映射 resume 前执行。dmsetup resume 或换表恢复 IO 前，dm core
+	 *         调用它检查 key 是否有效；key 无效就拒绝恢复。
+	 *   .resume：映射 resume 后执行。IO 重新放行时，dm core 调用它清除暂停标记。
+	 *   .message：用户态给 target 发送 message 时执行。dmsetup message <dev> ...
+	 *         会触发它，本代码里支持 key set 和 key wipe。
+	 *   .iterate_devices：dm core 需要枚举底层设备时执行。例如计算依赖关系、设备
+	 *         holder/slave 关系、生成 uevent 或处理 table 时，会用它知道本 target
+	 *         覆盖了哪个底层设备的哪个 sector 范围。
+	 *   .io_hints：dm core 合并队列限制时执行。创建/加载 table 或刷新 queue limits
+	 *         时调用它，让 dm-crypt 把 logical_block_size、io_min 和 max_segment_size
+	 *         等限制传给上层队列。
 	 */
 	.name   = "crypt",
 	.version = {1, 19, 0},
@@ -3926,6 +3950,50 @@ static int __init dm_crypt_init(void)
 {
 	int r;
 
+	/*
+	 * bio 相关基础知识：
+	 *
+	 * bio 是 Linux 块层描述一次块 IO 的核心结构。文件系统、swap、直接块设备访问等
+	 * 都会把读写请求组织成 bio，再交给块层。一个 bio 里通常包含：
+	 *   1. 操作类型：读、写、flush、discard 等，保存在 bi_opf/操作码里。
+	 *   2. 目标设备：请求最终要发到哪个块设备。
+	 *   3. 起始 sector：从设备哪个 512B sector 开始访问。
+	 *   4. 数据页数组：bio_vec 描述哪些 page、page 内偏移和长度参与 IO。
+	 *
+	 * 什么情况下“提交 IO”：
+	 *   1. 上层已经构造好 bio，并调用 submit_bio() 或对应封装时，bio 才真正进入
+	 *      块层调度/设备队列。
+	 *   2. 对 dm 设备来说，上层提交到的是虚拟 dm 设备；dm core 会调用当前 target
+	 *      的 .map 回调，也就是 crypt_map()。
+	 *   3. dm-crypt 的读路径会先把 clone bio 提交到底层设备读取密文，底层读完成
+	 *      后再排队解密。
+	 *   4. dm-crypt 的写路径会先把原始 bio 明文加密到 clone bio，随后再把 clone bio
+	 *      提交到底层设备。
+	 *   5. flush/discard 这类不需要加密数据页的请求，本文件会在 crypt_map() 中
+	 *      直接 remap 到底层设备。
+	 *
+	 * 什么情况下“合并 bio”：
+	 *   1. 块层为了减少请求数量，会尝试把相邻的小 bio 合并成更大的请求。
+	 *   2. 一般只有目标设备相同、操作类型兼容、sector 连续、数据方向一致，并且
+	 *      没有超过队列限制时，才可能合并。
+	 *   3. 队列限制包括最大 segment 数、max_segment_size、逻辑块大小、物理块大小、
+	 *      io_min、discard/flush 能力等；dm-crypt 通过 .io_hints 回调补充这些限制。
+	 *   4. 如果 bio 太大，或者不满足 target 的对齐要求，dm core/target 也可能拆分
+	 *      bio。例如 crypt_map() 里会用 dm_accept_partial_bio() 要求只接收一部分。
+	 *   5. dm-crypt 生成的写 clone bio 使用自己分配的 page，物理连续性可能和原始
+	 *      bio 不一样，所以这里把 max_segment_size 限制到 PAGE_SIZE，避免后续合并
+	 *      后超过底层设备能处理的 segment 限制。
+	 *
+	 * dm-crypt 和 bio 的关系：
+	 *   1. dm-crypt 不改变文件系统看到的逻辑地址空间，只在 dm target 内把逻辑 sector
+	 *      映射到底层设备 sector。
+	 *   2. bio 的顺序一致性主要由块层、dm core、flush/FUA 语义和底层设备保证；
+	 *      dm-crypt 的 workqueue 只是把加解密和底层提交拆开执行，不会在原始 bio
+	 *      完成前向上层报告成功。
+	 *   3. 对读请求，上层只在底层读完成并解密完成后收到 bio_endio()。
+	 *   4. 对写请求，上层只在明文加密成密文、密文 clone bio 提交到底层并完成后
+	 *      收到 bio_endio()。
+	 */
 	/* 步骤0：注册 target_type，让用户态可以创建名为 "crypt" 的 dm target。 */
 	/* 模块加载入口：把 crypt_target 注册到 Device Mapper core。 */
 	r = dm_register_target(&crypt_target);
