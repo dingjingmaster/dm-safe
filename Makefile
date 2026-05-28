@@ -21,6 +21,13 @@ dm-andsec-y := src/dm-andsec.o
 # 把项目 src 目录加入头文件搜索路径，方便后续放本项目自己的兼容头或公共头。
 ccflags-y += -I$(src)/src
 
+# 兼容不同发行版内核头：
+# 有些 5.4 发行版虽然版本号较新，但 struct dm_target 没有 limit_swap_bios 字段；
+# 有些新内核才有 accounts_remapped_io 字段。这里直接 grep 目标内核的
+# include/linux/device-mapper.h，存在字段才给 C 文件定义对应宏。
+ccflags-y += $(shell grep -q "limit_swap_bios" "$(srctree)/include/linux/device-mapper.h" 2>/dev/null && echo -DDM_ANDSEC_HAVE_LIMIT_SWAP_BIOS)
+ccflags-y += $(shell grep -q "accounts_remapped_io" "$(srctree)/include/linux/device-mapper.h" 2>/dev/null && echo -DDM_ANDSEC_HAVE_ACCOUNTS_REMAPPED_IO)
+
 .PHONY: all modules clean debug
 
 # debug/all/modules 都走内核模块构建目标。这里的 debug 只是为了兼容现有脚本命名，

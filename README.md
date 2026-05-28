@@ -1,6 +1,7 @@
 # dm-safe
-基于 Device Mapper 框架的 `dm-andsec` 透传 target。当前实现只把 IO 线性映射到底层
-块设备，不做加密、解密、key、IV 或完整性 tag 处理，后续可按需补充自己的处理逻辑。
+基于 Device Mapper 框架的 `dm-andsec` 透传 target。当前实现保留 mempool、bioset、
+workqueue 和写线程 IO 管线，但转换阶段只做数据复制透传，不使用 Crypto API、key、
+IV 或完整性 tag，后续可按需补充自己的处理逻辑。
 
 ## 构建
 
@@ -41,14 +42,18 @@ CC=gcc-15 ./scripts/build-matrix.sh
 
 ## 映射参数
 
-推荐使用新的透传参数格式：
+推荐使用新的参数格式：
 
 ```sh
 dmsetup create andsec0 --table "0 <sectors> andsec <dev_path> <start>"
 ```
 
-为方便从旧表迁移，`andsec` 也接受原固定参数格式，并忽略 cipher/key/iv/options：
+为方便从旧表迁移，`andsec` 也接受原固定参数格式，并忽略 cipher/key/iv：
 
 ```sh
 dmsetup create andsec0 --table "0 <sectors> andsec <cipher> <key> <iv_offset> <dev_path> <start>"
 ```
+
+当前保留并解析的可选项包括 `allow_discards`、`same_cpu_crypt`、
+`submit_from_crypt_cpus` 和 `sector_size:<n>`；`integrity:*`、`iv_large_sectors`
+仅为旧表兼容接收，不再触发对应加密或完整性逻辑。
