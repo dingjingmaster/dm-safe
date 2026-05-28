@@ -12,21 +12,14 @@ osVersion     ?= $(shell uname -r)
 # 目标内核的 build 目录，里面必须有已准备好的内核头文件和 Kbuild 生成文件。
 KERNEL_DIR    ?= /lib/modules/$(osVersion)/build
 
-# 生成的模块名是 dm-crypt.ko。
-obj-m += dm-crypt.o
+# 生成的模块名是 dm-andsec.ko。
+obj-m += dm-andsec.o
 
-# dm-crypt.ko 由 src/dm-crypt.o 链接而来。后续如果拆分文件，可继续往这里追加。
-dm-crypt-y := src/dm-crypt.o
+# dm-andsec.ko 由 src/dm-andsec.o 链接而来。后续如果拆分文件，可继续往这里追加。
+dm-andsec-y := src/dm-andsec.o
 
 # 把项目 src 目录加入头文件搜索路径，方便后续放本项目自己的兼容头或公共头。
 ccflags-y += -I$(src)/src
-
-# 兼容不同发行版内核头：
-# 有些 5.4 发行版虽然版本号较新，但 struct dm_target 没有 limit_swap_bios 字段；
-# 有些新内核才有 accounts_remapped_io 字段。这里直接 grep 目标内核的
-# include/linux/device-mapper.h，存在字段才给 C 文件定义对应宏。
-ccflags-y += $(shell grep -q "limit_swap_bios" "$(srctree)/include/linux/device-mapper.h" 2>/dev/null && echo -DDM_CRYPT_HAVE_LIMIT_SWAP_BIOS)
-ccflags-y += $(shell grep -q "accounts_remapped_io" "$(srctree)/include/linux/device-mapper.h" 2>/dev/null && echo -DDM_CRYPT_HAVE_ACCOUNTS_REMAPPED_IO)
 
 .PHONY: all modules clean debug
 

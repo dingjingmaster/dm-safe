@@ -19,7 +19,7 @@ osInfo="${osInfo//LTS/}"
 osInfo="${osInfo// /}"
 osInfo="${osInfo//\"/}"
 
-# ko 输出目录形如 ko/<发行版>/safe_fs-<发行版>-<架构>-<内核版本>.ko。
+# ko 输出目录形如 ko/<发行版>/dm-andsec-<发行版>-<架构>-<内核版本>.ko。
 koDir="$curDir/ko"
 kernelDir="$koDir/$osInfo"
 osVersion=$(uname -r)
@@ -61,16 +61,18 @@ fi
 # 会匹配 /lib/modules/5.4.18-35-generic。
 for m in $(ls "$modulesDir" | sort);
 do
-    koFullName=$kernelDir/safe_fs-${osInfo}-${osArch}-${m}.ko
+    koFullName=$kernelDir/dm-andsec-${osInfo}-${osArch}-${m}.ko
     if [[ "$m" =~ "$1" ]]; then
         echo "Start build ..."
         buildPath=$modulesDir/$m/build
         echo "KO full name: $koFullName"
 
         # 先删掉旧 ko，再调用项目 Makefile 走目标内核头目录编译。
+        makeArgs=(osHeader="$buildPath" osVersion="$m" osInfo="$osInfo" osName="$osName")
+        [[ -n "${CC:-}" ]] && makeArgs+=(CC="$CC")
         rm -f "$koFullName"
-        make isRelease=1 osHeader=$buildPath osVersion=$m osInfo=$osInfo osName=$osName clean
-        make isRelease=0 osHeader=$buildPath osVersion=$m osInfo=$osInfo osName=$osName debug
+        make isRelease=1 "${makeArgs[@]}" clean
+        make isRelease=0 "${makeArgs[@]}" debug
 
         # 编译完成后按项目约定签名并拷贝/输出到 koFullName。
         ${curDir}/scripts/sign-file.sh "${buildPath}" "${koFullName}"

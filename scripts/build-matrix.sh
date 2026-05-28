@@ -10,6 +10,16 @@ MAKE_CMD=${MAKE:-make}
 # 只要有一个内核构建失败，最后就用非 0 退出；但中间继续跑后续版本。
 status=0
 
+run_make()
+{
+	# 允许外部通过 CC=... 指定和目标内核一致的编译器，例如 CC=gcc-15。
+	if [ -n "${CC:-}" ]; then
+		"$MAKE_CMD" "$@" CC="$CC"
+	else
+		"$MAKE_CMD" "$@"
+	fi
+}
+
 if [ "$#" -eq 0 ]; then
 	# 不传参数时，默认验证这些本机源码树。传参数时，每个参数都是一个内核构建目录。
 	set -- \
@@ -21,6 +31,18 @@ if [ "$#" -eq 0 ]; then
 		/data/kernel/linux-6.17.1
 fi
 
+case "${ARCH:-$(uname -m)}" in
+	x86_64|i?86)
+		kernel_arch=x86
+		;;
+	aarch64)
+		kernel_arch=arm64
+		;;
+	*)
+		kernel_arch=${ARCH:-$(uname -m)}
+		;;
+esac
+
 for kernel_dir in "$@"; do
 	printf '\n==> %s\n' "$kernel_dir"
 
@@ -28,6 +50,11 @@ for kernel_dir in "$@"; do
 	# 如果这里只是原始源码树，直接跳过，避免输出一大串 Kbuild 报错。
 	if [ ! -e "$kernel_dir/include/generated/autoconf.h" ]; then
 		printf 'skip: kernel tree is not prepared; run modules_prepare first or pass an O= build directory\n'
+		continue
+	fi
+	if [ ! -e "$kernel_dir/arch/$kernel_arch/include/generated/uapi/asm/types.h" ] &&
+		[ ! -e "$kernel_dir/arch/$kernel_arch/include/uapi/asm/types.h" ]; then
+		printf 'skip: kernel tree is missing generated asm headers; run modules_prepare first or pass an O= build directory\n'
 		continue
 	fi
 
@@ -40,19 +67,19 @@ for kernel_dir in "$@"; do
 
 	# M="$ROOT" 告诉内核 Kbuild：外置模块源码在本项目根目录。
 	if [ -n "$modpost_warn" ]; then
-		if ! "$MAKE_CMD" -C "$kernel_dir" M="$ROOT" KBUILD_MODPOST_WARN="$modpost_warn" modules; then
+		if ! run_make -C "$kernel_dir" M="$ROOT" KBUILD_MODPOST_WARN="$modpost_warn" modules; then
 			status=1
 			continue
 		fi
 	else
-		if ! "$MAKE_CMD" -C "$kernel_dir" M="$ROOT" modules; then
+		if ! run_make -C "$kernel_dir" M="$ROOT" modules; then
 			status=1
 			continue
 		fi
 	fi
 
 	# 每个版本编完后清理本项目生成物，避免下一个内核版本复用旧的 .o/.mod 文件。
-	"$MAKE_CMD" -C "$kernel_dir" M="$ROOT" clean >/dev/null || status=1
+	run_make -C "$kernel_dir" M="$ROOT" clean >/dev/null || status=1
 done
 
 exit "$status"
